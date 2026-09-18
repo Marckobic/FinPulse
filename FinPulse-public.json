@@ -1,0 +1,228 @@
+{
+  "name": "FinPulse",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "f5bd52d5-3bb7-4c8a-832b-a621e12a983f",
+      "name": "Каждый день 9:00"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "FinPulse — демо",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 0,
+          "mode": "list",
+          "cachedResultName": "Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        0
+      ],
+      "id": "d699f850-41e5-4d72-8a5f-c7f8a947fe0a",
+      "name": "Журнал движения денег"
+    },
+    {
+      "parameters": {
+        "jsCode": "// FinPulse — расчёт runway (запаса дней до нуля)\n// Вход: строки листа Google Sheets: date | income | expense | comment\n// Выход: один item с итогами расчёта\n\nconst DAY_MS = 24 * 60 * 60 * 1000;\n\n// Числа из Sheets могут прийти строкой: \"150 000\", \"150000,50\", \"150 000 ₽\"\nfunction toNumber(value, rowInfo) {\n  if (value === null || value === undefined || value === '') return 0;\n  if (typeof value === 'number') return value;\n  const cleaned = String(value).replace(/[^\\d,.\\-]/g, '').replace(',', '.');\n  const n = Number(cleaned);\n  // Мусор не превращаем молча в 0: лучше упасть, чем посчитать неверно\n  if (!Number.isFinite(n)) throw new Error(`Не число \"${value}\" в строке: ${rowInfo}`);\n  return n;\n}\n\n// Даты: ISO \"2026-08-01\" или русская локаль \"01.08.2026\"\nfunction toDate(value) {\n  const s = String(value).trim();\n  let m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2})/);\n  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);\n  m = s.match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})$/);\n  if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1]);\n  throw new Error(`Не удалось распознать дату: \"${value}\"`);\n}\n\nconst fmtDate = ms => new Date(ms).toISOString().slice(0, 10).split('-').reverse().join('.');\nconst fmtRub = n => Math.round(n).toLocaleString('ru-RU') + ' ₽';\n\nconst rows = $input.all()\n  .map(item => item.json)\n  .filter(r => r.date); // пропускаем пустые строки\n\nif (rows.length === 0) throw new Error('Лист пустой — нечего считать');\n\nlet totalIncome = 0;\nlet totalExpense = 0;\nlet firstDate = Infinity;\nlet lastDate = -Infinity;\n\nfor (const r of rows) {\n  const d = toDate(r.date);\n  totalIncome += toNumber(r.income, r.date);\n  totalExpense += toNumber(r.expense, r.date);\n  firstDate = Math.min(firstDate, d);\n  lastDate = Math.max(lastDate, d);\n}\n\n// 1. Текущий остаток (стартовый остаток входит в income первой строки)\nconst balance = totalIncome - totalExpense;\n\n// 2. Средний расход в день: делим на КАЛЕНДАРНЫЕ дни периода, а не на число строк\nconst periodDays = Math.round((lastDate - firstDate) / DAY_MS) + 1;\nconst avgDailyExpense = totalExpense / periodDays;\n\n// 3. Runway: на сколько дней хватит остатка при среднем расходе,\n//    без учёта будущих поступлений (консервативная оценка)\nlet runwayDays;\nif (balance <= 0) runwayDays = 0;\nelse if (avgDailyExpense === 0) runwayDays = 9999; // расходов нет — условно «бесконечно»\nelse runwayDays = Math.floor(balance / avgDailyExpense);\n\n// Дату обнуления считаем от последней записи в логе, а не от даты запуска\nconst zeroDate = lastDate + runwayDays * DAY_MS;\n\n// Компактный журнал для LLM\nconst logText = rows\n  .map(r => `${r.date} | ${toNumber(r.income, r.date)} | ${toNumber(r.expense, r.date)} | ${r.comment ?? ''}`)\n  .join('\\n');\n\nreturn [{\n  json: {\n    runwayDays,\n    balance: Math.round(balance),\n    avgDailyExpense: Math.round(avgDailyExpense),\n    periodDays,\n    dataFrom: fmtDate(firstDate),\n    dataTo: fmtDate(lastDate),\n    zeroDate: fmtDate(zeroDate),\n    balanceText: fmtRub(balance),\n    avgDailyExpenseText: fmtRub(avgDailyExpense),\n    logText,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "abeb2d01-3e87-401d-97b6-ede66a3e819f",
+      "name": "Расчёт runway"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "61b639c6-1699-4521-993c-8755864c6354",
+              "leftValue": "={{ $json.runwayDays }}",
+              "rightValue": 45,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        0
+      ],
+      "id": "dbca7d80-b88a-4dcc-832b-8984cd744266",
+      "name": "Runway <= 45 дн.?"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        928,
+        208
+      ],
+      "id": "2ac15543-e6ab-4035-ae73-d8ef727ad91a",
+      "name": "Groq Chat Model"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Показатели (рассчитаны системой, они точные):\n- Запас денег: {{ $json.runwayDays }} дн.\n- Остаток: {{ $json.balanceText }}\n- Средний расход в день: {{ $json.avgDailyExpenseText }}\n- Период данных: {{ $json.dataFrom }} - {{ $json.dataTo }}\n\nЖурнал (дата, приход, расход, комментарий):\n{{ $json.logText }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "Ты финансовый аналитик малого бизнеса. Тебе дают уже рассчитанные показатели и журнал движения денег. Коротко объясни владельцу, почему запас денег низкий и что проверить в первую очередь.  Правила: - Не пересчитывай показатели и не придумывай новые числа. Упоминай только суммы и даты, которые есть во входных данных. - Первая строка журнала — остаток на начало периода, а не выручка. - Опирайся только на записи журнала. Если причину по данным не видно, так и напиши. - Не давай юридических и налоговых советов. - Даты пиши полностью в формате ДД.ММ.ГГГГ. Не перечисляй больше двух дат подряд. - Переносы строк делай настоящими, не пиши символы \\n в тексте. - Формат: обычный текст без markdown, до 600 символов.   «Почему:» — 1–2 предложения.   «Что проверить:» — 2 коротких пункта через дефис."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        992,
+        0
+      ],
+      "id": "d44332cb-3751-49ff-9e76-353d53130fb9",
+      "name": "ИИ-комментарии",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_CHAT_ID",
+        "text": "=⚠️ FinPulse: риск кассового разрыва\n\nЗапас денег: {{ $('Расчёт runway').item.json.runwayDays }} дн.\nОриентировочная дата обнуления: {{ $('Расчёт runway').item.json.zeroDate }}\n\nОстаток: {{ $('Расчёт runway').item.json.balanceText }}\nСредний расход: {{ $('Расчёт runway').item.json.avgDailyExpenseText }} в день\nДанные за период: {{ $('Расчёт runway').item.json.dataFrom }} – {{ $('Расчёт runway').item.json.dataTo }}\n\nКомментарий ИИ:\n{{ ($json.text || 'недоступен — цифры выше рассчитаны без ИИ').replace(/\\\\n/g, '\\n') }}\n\nЗапас считается как число дней, на которое хватит остатка при среднем расходе, без учёта новых поступлений. Порог тревоги — 45 дней.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1424,
+        32
+      ],
+      "id": "bbebcc89-601b-497e-8100-d50979e1ecef",
+      "name": "Алерт в Telegram"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Каждый день 9:00": {
+      "main": [
+        [
+          {
+            "node": "Журнал движения денег",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Журнал движения денег": {
+      "main": [
+        [
+          {
+            "node": "Расчёт runway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Расчёт runway": {
+      "main": [
+        [
+          {
+            "node": "Runway <= 45 дн.?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Runway <= 45 дн.?": {
+      "main": [
+        [
+          {
+            "node": "ИИ-комментарии",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "ИИ-комментарии",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ИИ-комментарии": {
+      "main": [
+        [
+          {
+            "node": "Алерт в Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timeZone": "Europe/Moscow"
+  },
+  "tags": []
+}
